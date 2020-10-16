@@ -91,8 +91,10 @@ static bool worklist_change_build_target(struct player *pplayer,
 static bool city_distribute_surplus_shields(struct player *pplayer,
 					    struct city *pcity);
 static bool city_build_building(struct player *pplayer, struct city *pcity);
-static bool city_build_unit(struct player *pplayer, struct city *pcity);
-static bool city_build_stuff(struct player *pplayer, struct city *pcity);
+static bool city_build_unit(struct player *pplayer, struct city *pcity,
+                            int *pop_loss);
+static bool city_build_stuff(struct player *pplayer, struct city *pcity,
+                             int *pop_loss);
 static struct impr_type *building_upgrades_to(struct city *pcity,
 					      struct impr_type *pimprove);
 static void upgrade_building_prod(struct city *pcity);
@@ -2301,7 +2303,8 @@ static struct unit *city_create_unit(struct city *pcity,
   City_Build_Slots is used.
   Returns FALSE when the city is removed, TRUE otherwise.
 **************************************************************************/
-static bool city_build_unit(struct player *pplayer, struct city *pcity)
+static bool city_build_unit(struct player *pplayer, struct city *pcity,
+                            int *pop_loss)
 {
   struct unit_type *utype;
   struct worklist *pwl = &pcity->worklist;
@@ -2349,6 +2352,8 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity)
     /* Should we disband the city? -- Massimo */
     if (city_size_get(pcity) == pop_cost
 	&& is_city_option_set(pcity, CITYO_DISBAND)) {
+	    /* Note that unlike mere size reduction, disband happens *before*
+	       food and trade processing, so you don't get those outputs - Ed */
       return !disband_city(pcity);
     }
 
@@ -2398,11 +2403,7 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity)
        * rearrange the worker to take into account the extra resources
        * (food) needed. */
       if (pop_cost > 0) {
-        /* This won't disband city due to pop_cost, but script might
-         * still destroy city. */
-        if (!city_reduce_size(pcity, pop_cost, NULL, "unit_built")) {
-          break;
-        }
+        *pop_loss += pop_cost;
       }
 
       /* to eliminate micromanagement, we only subtract the unit's cost */
@@ -2419,7 +2420,7 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity)
                           "%s cost %d population. %s shrinks to size %d.",
                           pop_cost),
                       utype_name_translation(utype), pop_cost,
-                      city_link(pcity), city_size_get(pcity));
+                      city_link(pcity), city_size_get(pcity) - *pop_loss);
       }
 
       if (i != 0 && worklist_length(pwl) > 0) {
@@ -2442,7 +2443,8 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity)
 /**************************************************************************
   Returns FALSE when the city is removed, TRUE otherwise.
 **************************************************************************/
-static bool city_build_stuff(struct player *pplayer, struct city *pcity)
+static bool city_build_stuff(struct player *pplayer, struct city *pcity,
+                             int *pop_loss)
 {
   if (!city_distribute_surplus_shields(pplayer, pcity)) {
     return FALSE;
@@ -2455,7 +2457,7 @@ static bool city_build_stuff(struct player *pplayer, struct city *pcity)
   case VUT_IMPROVEMENT:
     return city_build_building(pplayer, pcity);
   case VUT_UTYPE:
-    return city_build_unit(pplayer, pcity);
+    return city_build_unit(pplayer, pcity, pop_loss);
   default:
     /* must never happen! */
     fc_assert(FALSE);
@@ -2963,6 +2965,7 @@ static void update_city_activity(struct city *pcity)
   struct government *gov;
   bool is_happy;
   bool is_celebrating;
+  int pop_loss = 0;
 
   if (!pcity) {
     return;
@@ -2979,7 +2982,7 @@ static void update_city_activity(struct city *pcity)
 
   /* Reporting of celebrations rewritten, copying the treatment of disorder below,
      with the added rapture rounds count.  991219 -- Jing */
-  if (city_build_stuff(pplayer, pcity)) {
+  if (city_build_stuff(pplayer, pcity, &pop_loss)) {
     int saved_id;
     int revolution_turns;
 
@@ -3105,6 +3108,11 @@ static void update_city_activity(struct city *pcity)
     }
     check_pollution(pcity);
 
+    /* This won't disband city due to pop_cost, but script might
+     * still destroy city. */
+    if (pop_loss && !city_reduce_size(pcity, pop_loss, NULL, "unit_built")) {
+      return;
+    }
     send_city_info(NULL, pcity);
 
     if (revolution_turns > 0 && pcity->anarchy > revolution_turns) {
