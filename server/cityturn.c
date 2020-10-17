@@ -3036,13 +3036,6 @@ static void update_city_activity(struct city *pcity)
       }
     }
 
-    /* City population updated here, after the rapture stuff above. --Jing */
-    saved_id = pcity->id;
-    city_populate(pcity, pplayer);
-    if (NULL == player_city_by_number(pplayer, saved_id)) {
-      return;
-    }
-
     pcity->did_sell = FALSE;
     pcity->did_buy = FALSE;
     pcity->airlift = city_airlift_max(pcity);
@@ -3111,6 +3104,13 @@ static void update_city_activity(struct city *pcity)
     /* This won't disband city due to pop_cost, but script might
      * still destroy city. */
     if (pop_loss && !city_reduce_size(pcity, pop_loss, NULL, "unit_built")) {
+      return;
+    }
+
+    /* City population updated here, after stuff that uses tile workers etc. */
+    saved_id = pcity->id;
+    city_populate(pcity, pplayer);
+    if (NULL == player_city_by_number(pplayer, saved_id)) {
       return;
     }
     send_city_info(NULL, pcity);
