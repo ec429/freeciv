@@ -92,9 +92,9 @@ static bool city_distribute_surplus_shields(struct player *pplayer,
 					    struct city *pcity);
 static bool city_build_building(struct player *pplayer, struct city *pcity);
 static bool city_build_unit(struct player *pplayer, struct city *pcity,
-                            int *pop_loss);
+                            struct unit_type **pop_loss);
 static bool city_build_stuff(struct player *pplayer, struct city *pcity,
-                             int *pop_loss);
+                             struct unit_type **pop_loss);
 static struct impr_type *building_upgrades_to(struct city *pcity,
 					      struct impr_type *pimprove);
 static void upgrade_building_prod(struct city *pcity);
@@ -2301,10 +2301,13 @@ static struct unit *city_create_unit(struct city *pcity,
 /**********************************************************************//**
   Build city units. Several units can be built in one turn if the effect
   City_Build_Slots is used.
+  If a unit with pop_cost was built (only one may be per turn), write its
+  type to *pop_loss, so that calling code can apply the pop_cost and
+  generate appropriate client messages.
   Returns FALSE when the city is removed, TRUE otherwise.
 **************************************************************************/
 static bool city_build_unit(struct player *pplayer, struct city *pcity,
-                            int *pop_loss)
+                            struct unit_type **pop_loss)
 {
   struct unit_type *utype;
   struct worklist *pwl = &pcity->worklist;
@@ -2401,27 +2404,16 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity,
 
       /* After we created the unit remove the citizen. This will also
        * rearrange the worker to take into account the extra resources
-       * (food) needed. */
+       * (food) needed. Calling code will actually do that; we just
+       * signal the need here. */
       if (pop_cost > 0) {
-        *pop_loss += pop_cost;
+        fc_assert(!*pop_loss);
+        *pop_loss = utype;
       }
 
       /* to eliminate micromanagement, we only subtract the unit's cost */
       pcity->before_change_shields -= unit_shield_cost;
       pcity->shield_stock -= unit_shield_cost;
-
-      if (pop_cost > 0) {
-        /* Additional message if the unit has population cost. */
-        notify_player(pplayer, city_tile(pcity), E_UNIT_BUILT_POP_COST,
-                      ftc_server,
-                      /* TRANS: "<unit> cost... <city> shrinks..."
-                       * Plural in "%d population", not "size %d". */
-                      PL_("%s cost %d population. %s shrinks to size %d.",
-                          "%s cost %d population. %s shrinks to size %d.",
-                          pop_cost),
-                      utype_name_translation(utype), pop_cost,
-                      city_link(pcity), city_size_get(pcity) - *pop_loss);
-      }
 
       if (i != 0 && worklist_length(pwl) > 0) {
         /* remove the build unit from the worklist; it has to be one less
@@ -2444,7 +2436,7 @@ static bool city_build_unit(struct player *pplayer, struct city *pcity,
   Returns FALSE when the city is removed, TRUE otherwise.
 **************************************************************************/
 static bool city_build_stuff(struct player *pplayer, struct city *pcity,
-                             int *pop_loss)
+                             struct unit_type **pop_loss)
 {
   if (!city_distribute_surplus_shields(pplayer, pcity)) {
     return FALSE;
@@ -2965,7 +2957,7 @@ static void update_city_activity(struct city *pcity)
   struct government *gov;
   bool is_happy;
   bool is_celebrating;
-  int pop_loss = 0;
+  struct unit_type *pop_loss = NULL;
 
   if (!pcity) {
     return;
@@ -3101,17 +3093,31 @@ static void update_city_activity(struct city *pcity)
     }
     check_pollution(pcity);
 
-    /* This won't disband city due to pop_cost, but script might
-     * still destroy city. */
-    if (pop_loss && !city_reduce_size(pcity, pop_loss, NULL, "unit_built")) {
-      return;
-    }
-
     /* City population updated here, after stuff that uses tile workers etc. */
     saved_id = pcity->id;
     city_populate(pcity, pplayer);
     if (NULL == player_city_by_number(pplayer, saved_id)) {
       return;
+    }
+
+    if (pop_loss) {
+      int pop_cost = utype_pop_value(pop_loss);
+
+      fc_assert(pop_cost > 0);
+      /* Generate message about the population cost. */
+      notify_player(pplayer, city_tile(pcity), E_UNIT_BUILT_POP_COST,
+                    ftc_server,
+                    /* TRANS: "<unit> cost... <city> shrinks..."
+                     * Plural in "%d population", not "size %d". */
+                    PL_("%s cost %d population. %s shrinks to size %d.",
+                        "%s cost %d population. %s shrinks to size %d.",
+                        pop_cost),
+                    utype_name_translation(pop_loss), pop_cost,
+                    city_link(pcity), city_size_get(pcity) - pop_cost);
+      /* This won't disband city due to pop_cost, but script might
+       * still destroy city. */
+      if(!city_reduce_size(pcity, pop_cost, NULL, "unit_built"))
+        return;
     }
     send_city_info(NULL, pcity);
 
